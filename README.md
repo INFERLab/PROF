@@ -15,7 +15,8 @@ We demonstrate our method on two applications: energy-efficient building operati
 - In the inverter control setting, PROF satisfies the constraints 100% of the time and minimizes curtailment as well as possible within its conservative safe set after learning safely for half a day.
 
 **Framework.** 
-<img src="docs/figs/framework.png" data-canonical-src="docs/figs/framework.png" width="600" />
+
+<img src="docs/figs/framework.png" data-canonical-src="docs/figs/framework.png" width="1000" />
 
 
 
