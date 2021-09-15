@@ -15,19 +15,15 @@ import pdb
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+### Can move to utils.network if appropriate
 class Net(nn.Module):
     def __init__(self, n_bus, n_inverters, shared_hidden_layer_sizes, indiv_hidden_layer_sizes, n_input = 3):
         super(Net, self).__init__()
-
-        '''
-            TODO: If want to support batch size = 1, need to take out batch norm
-        '''
-        
         #### Multi-headed architecture
         # "Shared" model
-        # Set up non-linear network of Linear -> BatchNorm -> ReLU
+        # Set up non-linear network of Linear -> ReLU
         layer_sizes = [n_input * n_bus] + shared_hidden_layer_sizes[:-1]
-        layers = reduce(operator.add, 
+        layers = reduce(operator.add,
             [[nn.Linear(a,b), nn.ReLU(), ] # nn.BatchNorm1d(b), nn.Dropout(p=0.2)]
                 for a,b in zip(layer_sizes[0:-1], layer_sizes[1:])])
         layers += [nn.Linear(layer_sizes[-1], shared_hidden_layer_sizes[-1])]
@@ -35,7 +31,7 @@ class Net(nn.Module):
         
         # Individual inverter model
         layer_sizes = [shared_hidden_layer_sizes[-1]] + indiv_hidden_layer_sizes
-        layers = reduce(operator.add, 
+        layers = reduce(operator.add,
             [[nn.Linear(a,b),  nn.ReLU(), ] # nn.BatchNorm1d(b), nn.Dropout(p=0.2)]
                 for a,b in zip(layer_sizes[0:-1], layer_sizes[1:])])
         layers += [nn.Linear(layer_sizes[-1], 2)]  # output p and q
@@ -49,8 +45,8 @@ class Net(nn.Module):
         # # Set up non-linear network of Linear -> BatchNorm -> ReLU -> Dropout layers
         # self.n_inverters = n_inverters
         # layer_sizes = [4 * n_inverters] + shared_hidden_layer_sizes
-        # layers = reduce(operator.add, 
-        #     [[nn.Linear(a,b), nn.BatchNorm1d(b), nn.ReLU(), nn.Dropout(p=0.2)] 
+        # layers = reduce(operator.add,
+        #     [[nn.Linear(a,b), nn.BatchNorm1d(b), nn.ReLU(), nn.Dropout(p=0.2)]
         #         for a,b in zip(layer_sizes[0:-1], layer_sizes[1:])])
         # layers += [nn.Linear(layer_sizes[-1], 2 * n_inverters)]
         # self.nn = nn.Sequential(*layers)
@@ -85,11 +81,11 @@ class NeuralController(nn.Module):
         
         n_bus = env_params['n_bus']
         self.gen_idx = env_params['gen_idx']
-        self.other_idx = [i for i in range(self.n_bus) if i not in self.gen_idx]
+        self.other_idx = [i for i in range(n_bus) if i not in self.gen_idx]
         
         H = env_params['H']
-        R = H[:, :self.n_bus]
-        B = H[:, self.n_bus:]
+        R = H[:, :n_bus]
+        B = H[:, n_bus:]
         R_new = np.vstack([np.hstack([R[self.gen_idx][:, self.gen_idx],
                                       R[self.gen_idx][:, self.other_idx]]),
                             np.hstack([R[self.other_idx][:, self.gen_idx],
@@ -134,7 +130,7 @@ class NeuralController(nn.Module):
         P_av = cp.Parameter(len(self.gen_idx))
         
         # Voltage: Apply to All Buses
-        z = cp.hstack([self.P, self.P_nc, self.Q, self.Q_nc]) # z: (70, )
+        z = cp.hstack([P, P_nc, Q, Q_nc]) # z: (70, )
         constraints = [self.V_lower - self.V0 <= H_new@z,
                        H_new@z <= self.V_upper - self.V0]
         
@@ -157,7 +153,7 @@ class NeuralController(nn.Module):
     def forward(self, state, Sbus, P_av, inference_flag = True):
         '''
         Input:
-            state: [dV(k-1), P_nc, Q_nc] 
+            state: [dV(k-1), P_nc, Q_nc]
           where,
                 Z_nc = Z - Z0
             May get (n, dim) or (dim);
@@ -165,39 +161,50 @@ class NeuralController(nn.Module):
             P, Q (with repsect to the reference point)
         '''
         ## Get information for non-controllable loads
-        P_nc = Sbus.real[self.other_idx] / self.scaler
-        Q_nc = Sbus.imag[self.other_idx] / self.scaler
-        self.P_nc.value = P_nc
-        self.Q_nc.value = Q_nc
-        self.P_av.value = P_av
-        
-        if P_tilde.ndimension() == 1:
-            P_tilde, Q_tilde = self.nn(state.to(DEVICE)) # n x n_inverter
+        P_all = Sbus.real /self.scaler
+        Q_all = Sbus.imag /self.scaler
+        if len(Sbus.shape)==1:
+            P_nc = Sbus.real[self.other_idx] / self.scaler
+            Q_nc = Sbus.imag[self.other_idx] / self.scaler
+        elif len(Sbus.shape)==2:
+            P_nc = Sbus.real[:, self.other_idx] / self.scaler
+            Q_nc = Sbus.imag[:, self.other_idx] / self.scaler
         else:
-            P_tilde, Q_tilde = self.nn(state.to(DEVICE)) # n x n_inverter
+            print("Well, not expected to happen")
 
+        P_tilde, Q_tilde = self.nn(state.to(DEVICE)) # n x n_inverter
+        
         ## During inference if the action is already feasible, not need to project
         if inference_flag:
-            if self.is_feasible(P_tilde.detach().clone()/self.scaler, Q_tilde.detach().clone()/self.scaler,
-                P_nc, Q_nc, P_av):
-                return P_tilde/self.scaler, Q_tilde/self.scaler
+            P_tilde = P_tilde.squeeze()
+            Q_tilde = Q_tilde.squeeze()
+            if self.is_feasible(P_tilde.detach().clone()/self.scaler,
+                               Q_tilde.detach().clone()/self.scaler,
+                               P_nc, Q_nc, P_av):
+                P_all[self.gen_idx] = P_tilde.detach().cpu().numpy() / self.scaler
+                Q_all[self.gen_idx] = Q_tilde.detach().cpu().numpy() / self.scaler
+                return P_all, Q_all
             else:
-                try: 
+                try:
                     P, Q = self.proj_layer(P_tilde/self.scaler, Q_tilde/self.scaler,
                         torch.tensor(P_nc).float().to(DEVICE),
                         torch.tensor(Q_nc).float().to(DEVICE),
                         torch.tensor(P_av).float().to(DEVICE))
                     self.proj_count += 1
+                    P_all[self.gen_idx] = P.detach().cpu().numpy()
+                    Q_all[self.gen_idx] = Q.detach().cpu().numpy()
                 except: # The solver dies for some reason
-                    P = torch.zeros_like(P_tilde)
-                    Q = torch.zeros_like(Q_tilde)
-                return P, Q
+                    P_all[self.gen_idx] = 0
+                    Q_all[self.gen_idx] = 0
+                return P_all, Q_all
         else:
+            #pdb.set_trace()
             P, Q = self.proj_layer(P_tilde/self.scaler, Q_tilde/self.scaler,
                         torch.tensor(P_nc).float().to(DEVICE),
                         torch.tensor(Q_nc).float().to(DEVICE),
                         torch.tensor(P_av).float().to(DEVICE))
-            proj_loss = self.mse(P.detach(), P_tilde/self.scaler) + self.mse(Q.detach(), Q_tilde/self.scaler)
+            proj_loss = self.mse(P.detach(), P_tilde/self.scaler)  \
+                        + self.mse(Q.detach(), Q_tilde/self.scaler)
             return P, Q, proj_loss
     
     def update(self, batch_size = 64, n_batch = 16):
@@ -205,7 +212,7 @@ class NeuralController(nn.Module):
             state, Sbus, P_av = self.memory.sample_batch(batch_size = batch_size)
             P, Q, proj_loss = self.forward(state, Sbus, P_av, inference_flag = False)
             #pdb.set_trace()
-            curtail = self.ReLU(torch.tensor(P_av).to(DEVICE) - P[:, self.gen_idx])
+            curtail = self.ReLU(torch.tensor(P_av).to(DEVICE) - P)
             loss = curtail.mean() + self.lam * proj_loss
             print(f'curtail = {curtail.mean().item()}, proj_loss = {proj_loss.item()}')
             
@@ -227,8 +234,8 @@ class NeuralController(nn.Module):
         if torch.any(v < self.V_lower_torch -self.V0_torch - eps) | torch.any(v > self.V_upper_torch-self.V0_torch+eps):
             return False
 
-        P = P[self.gen_idx] + self.P0_torch[self.gen_idx]
-        Q = Q[self.gen_idx] + self.Q0_torch[self.gen_idx]
+        P = P + self.P0_torch[self.gen_idx]
+        Q = Q + self.Q0_torch[self.gen_idx]
         PQ = torch.stack([P, Q]) # (2, 21)
         if torch.any(torch.norm(PQ, dim = 0) > self.S_rating_torch + eps):
             return False
@@ -237,4 +244,17 @@ class NeuralController(nn.Module):
             return False
         else:
             return True
+
+   
+    
+
+
+# if __name__ == "__main__":
+#     # Toy test code
+#     n = 3
+#     nbatch = 2
+#     model = Net(n, [200,200,40], [30,5])
+#     controller = NeuralController(n, model, np.random.randn(n, 2*n), 0.95, 1.05)
+#     action = controller(torch.randn(nbatch, 4*n), torch.randn(nbatch, n), torch.randn(nbatch, n))
+        
 
