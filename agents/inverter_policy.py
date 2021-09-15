@@ -21,18 +21,18 @@ class Net(nn.Module):
         super(Net, self).__init__()
         #### Multi-headed architecture
         # "Shared" model
-        # Set up non-linear network of Linear -> ReLU
+        # Set up non-linear network of Linear  -> ReLU
         layer_sizes = [n_input * n_bus] + shared_hidden_layer_sizes[:-1]
-        layers = reduce(operator.add,
-            [[nn.Linear(a,b), nn.ReLU(), ] # nn.BatchNorm1d(b), nn.Dropout(p=0.2)]
+        layers = reduce(operator.add, 
+            [[nn.Linear(a,b), nn.ReLU(), ] 
                 for a,b in zip(layer_sizes[0:-1], layer_sizes[1:])])
         layers += [nn.Linear(layer_sizes[-1], shared_hidden_layer_sizes[-1])]
         self.base_net = nn.Sequential(*layers)
         
         # Individual inverter model
         layer_sizes = [shared_hidden_layer_sizes[-1]] + indiv_hidden_layer_sizes
-        layers = reduce(operator.add,
-            [[nn.Linear(a,b),  nn.ReLU(), ] # nn.BatchNorm1d(b), nn.Dropout(p=0.2)]
+        layers = reduce(operator.add, 
+            [[nn.Linear(a,b),  nn.ReLU(), ] 
                 for a,b in zip(layer_sizes[0:-1], layer_sizes[1:])])
         layers += [nn.Linear(layer_sizes[-1], 2)]  # output p and q
         indiv_model = nn.Sequential(*layers)
@@ -244,17 +244,3 @@ class NeuralController(nn.Module):
             return False
         else:
             return True
-
-   
-    
-
-
-# if __name__ == "__main__":
-#     # Toy test code
-#     n = 3
-#     nbatch = 2
-#     model = Net(n, [200,200,40], [30,5])
-#     controller = NeuralController(n, model, np.random.randn(n, 2*n), 0.95, 1.05)
-#     action = controller(torch.randn(nbatch, 4*n), torch.randn(nbatch, n), torch.randn(nbatch, n))
-        
-
